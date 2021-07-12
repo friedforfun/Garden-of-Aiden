@@ -35,12 +35,20 @@ public class NamedPipe
     /// <summary>
     /// Queue of strings to write to the pipe
     /// </summary>
-    public static ConcurrentQueue<string> WriteQueue = new ConcurrentQueue<string>();
+    private static ConcurrentQueue<string> WriteQueue = new ConcurrentQueue<string>();
+
+    public static void WriteToPipe(string str) {
+        WriteQueue.Enqueue(str);
+    }
 
     /// <summary>
     /// Queue of strings read from the pipe
     /// </summary>
-    public static ConcurrentQueue<string> ReadQueue = new ConcurrentQueue<string>();
+    private static ConcurrentQueue<string> ReadQueue = new ConcurrentQueue<string>();
+
+    public static bool TryReadFromPipe(out string str) {
+        return ReadQueue.TryDequeue(out str);
+    }
 
     public void RunServer()
     {
@@ -74,13 +82,9 @@ public class NamedPipe
 
                     //str = new string(str.Reverse().ToArray());
                     string res;
-                    while (WriteQueue.TryPeek(out res))
+                    while (WriteQueue.TryDequeue(out res) && !CloseServer)
                     {
-                        
-                        if (WriteQueue.TryDequeue(out res))
-                        {
-                            ss.WriteToPipe(res);
-                        }
+                        ss.WriteToPipe(res);
                     }
 
                     //Debug.Log($"Wrote: {str}");

@@ -12,20 +12,23 @@ public class NamedPipeRunner : MonoBehaviour
         server = new Thread(np.RunServer);
         server.Start();
 
+        StartCoroutine(TestReadWrite());
     }
 
-    private void Update()
+    IEnumerator TestReadWrite() 
     {
-        string str;
-        if (NamedPipe.ReadQueue.TryDequeue(out str))
+        for (;;) 
         {
-            Debug.Log($"READ: {str}");
-            str = new string(str.Reverse().ToArray());
-            NamedPipe.WriteQueue.Enqueue(str);
-            Debug.Log($"WRITE: {str}");
+            yield return new WaitForSeconds(0.5f);
+            string str;
+            if (NamedPipe.TryReadFromPipe(out str))
+            {
+                Debug.Log($"READ: {str}");
+                str = new string(str.Reverse().ToArray());
+                NamedPipe.WriteToPipe(str);
+                Debug.Log($"WRITE: {str}");
+            }
         }
-
-        
     }
 
     private void OnDestroy()
