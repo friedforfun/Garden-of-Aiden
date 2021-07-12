@@ -2,7 +2,7 @@ import time
 import struct
 
 if __name__ == '__main__':
-    f = open('\\\.\pipe\Test', 'r+b', 0)
+    f = open(r"\\.\pipe\UnityPipe", 'r+b', 0)
     i = 1
 
     while True:

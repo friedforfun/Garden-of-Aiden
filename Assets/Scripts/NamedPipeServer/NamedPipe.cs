@@ -1,91 +1,142 @@
+using System;
 using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using UnityEngine;
+
 
 public class NamedPipe
 {
-    // need to cleanly close the server from the server
-    // need to print from server thread
+    private static readonly string PipeName = "UnityPipe";
+
+    /// <summary>
+    /// Initialised pipe server with default pipe name: "UnityPipe"
+    /// </summary>
     public NamedPipe()
     {
 
     }
 
-    private bool CloseServer = false;
+    private static int _closeServerBackingValue = 0;
+
+    private static bool CloseServer
+    {
+        get { return (Interlocked.CompareExchange(ref _closeServerBackingValue, 1, 1) == 1); }
+        set
+        {
+            if (value) Interlocked.CompareExchange(ref _closeServerBackingValue, 1, 0);
+            else Interlocked.CompareExchange(ref _closeServerBackingValue, 0, 1);
+        }
+    }
 
     /// <summary>
     /// Queue of strings to write to the pipe
     /// </summary>
-    private ConcurrentQueue<string> wq = new ConcurrentQueue<string>();
+    public static ConcurrentQueue<string> WriteQueue = new ConcurrentQueue<string>();
 
     /// <summary>
     /// Queue of strings read from the pipe
     /// </summary>
-    private ConcurrentQueue<string> rq = new ConcurrentQueue<string>();
+    public static ConcurrentQueue<string> ReadQueue = new ConcurrentQueue<string>();
 
-    public void run_server()
+    public void RunServer()
     {
-        using (var server = new NamedPipeServerStream("Test"))
+        using (var server = new NamedPipeServerStream(PipeName))
         {
-
-            ServerStream ss = new ServerStream(server);
-
-            while (!CloseServer)
-            {
-                try
-                {
-                    var str = ss.read_from_pipe();
-                    //rq.Enqueue(str);
-                    Debug.Log($"Read: {str}");
-
-                    str = new string(str.Reverse().ToArray());
-
-                    ss.write_to_pipe(str);
-                    Debug.Log($"Wrote: {str}");
-                }
-                catch (EndOfStreamException)
-                {
-                    break;
-                }
-            }
+            manageStream(server);
         }
-        
-
     }
 
-    public void close_connection()
+
+    public static void CloseConnection()
     {
         CloseServer = true;
     }
 
-    private class ServerStream
+    private void manageStream(NamedPipeServerStream server)
+    {
+        using (ServerStream ss = new ServerStream(server))
+        {
+            while (!CloseServer)
+            {
+                try
+                {
+                    string str;
+                    if (ss.TryReadFromPipe(out str))
+                    {
+                        ReadQueue.Enqueue(str);
+                    }
+
+                    //Debug.Log($"Read: {str}");
+
+                    //str = new string(str.Reverse().ToArray());
+                    string res;
+                    while (WriteQueue.TryPeek(out res))
+                    {
+                        
+                        if (WriteQueue.TryDequeue(out res))
+                        {
+                            ss.WriteToPipe(res);
+                        }
+                    }
+
+                    //Debug.Log($"Wrote: {str}");
+                }
+                catch (Exception ex) when (ex is ObjectDisposedException)
+                {
+                    CloseConnection();
+                    break;
+                }
+            }
+        }
+    }
+
+    private class ServerStream : IDisposable
     {
         private BinaryReader br;
         private BinaryWriter bw;
+        private bool disposedValue;
 
         public ServerStream(NamedPipeServerStream server)
         {
             br = new BinaryReader(server);
             bw = new BinaryWriter(server);
 
-            Debug.Log("Waiting for connection...");
+            //Debug.Log("Waiting for connection...");
             server.WaitForConnection();
 
-            Debug.Log("Connected.");
+            //Debug.Log("Connected.");
         }
+
+
 
         /// <summary>
         /// Reads message from input stream, use the length to find how much to read for each message.
         /// Use ASCII encoding.
         /// </summary>
-        /// <returns></returns>
-        public string read_from_pipe()
+        /// <param name="str">String out parameter</param>
+        /// <exception cref="ObjectDisposedException">When the stream is Disposed during a read</exception>
+        /// <returns>True when an output is read</returns>
+        public bool TryReadFromPipe(out string str)
         {
-            var len = (int)br.ReadUInt32();
-            return new string(br.ReadChars(len));
+            str = "";
+            try
+            {
+                var len = (int)br.ReadUInt32();
+                str =  new string(br.ReadChars(len));
+                return true;
+            }
+            catch (Exception ex) when (
+            ex is EndOfStreamException || 
+            ex is IOException
+            )
+            {
+                return false;
+            }
+            // throws ObjectDisposedException exception
         }
 
         /// <summary>
@@ -93,12 +144,41 @@ public class NamedPipe
         /// expects ASCII encoding
         /// </summary>
         /// <param name="str"></param>
-        public void write_to_pipe(string str)
+        public void WriteToPipe(string str)
         {
             var buf = Encoding.ASCII.GetBytes(str);
             bw.Write((uint)buf.Length);
             bw.Write(buf);
         }
 
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    br.Dispose();
+                    bw.Dispose();
+                }
+
+                // TODO: free unmanaged resources (unmanaged objects) and override finalizer
+                // TODO: set large fields to null
+                disposedValue = true;
+            }
+        }
+
+        // // TODO: override finalizer only if 'Dispose(bool disposing)' has code to free unmanaged resources
+        // ~ServerStream()
+        // {
+        //     // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+        //     Dispose(disposing: false);
+        // }
+
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
     }
 }

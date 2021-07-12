@@ -1,5 +1,5 @@
 using System.Threading;
-using TMPro;
+using System.Linq;
 using UnityEngine;
 
 public class NamedPipeRunner : MonoBehaviour
@@ -9,14 +9,28 @@ public class NamedPipeRunner : MonoBehaviour
     void Start()
     {
         np = new NamedPipe();
-        server = new Thread(np.run_server);
+        server = new Thread(np.RunServer);
         server.Start();
 
     }
 
+    private void Update()
+    {
+        string str;
+        if (NamedPipe.ReadQueue.TryDequeue(out str))
+        {
+            Debug.Log($"READ: {str}");
+            str = new string(str.Reverse().ToArray());
+            NamedPipe.WriteQueue.Enqueue(str);
+            Debug.Log($"WRITE: {str}");
+        }
+
+        
+    }
+
     private void OnDestroy()
     {
-        np.close_connection();
+        NamedPipe.CloseConnection();
         server.Join();
     }
 
