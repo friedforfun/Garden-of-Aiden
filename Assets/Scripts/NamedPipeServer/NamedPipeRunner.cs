@@ -1,6 +1,7 @@
 using System.Threading;
 using System.Linq;
 using UnityEngine;
+using System.Collections;
 
 public class NamedPipeRunner : MonoBehaviour
 {
@@ -15,7 +16,7 @@ public class NamedPipeRunner : MonoBehaviour
         StartCoroutine(TestReadWrite());
     }
 
-    IEnumerator TestReadWrite() 
+    private IEnumerator TestReadWrite() 
     {
         for (;;) 
         {

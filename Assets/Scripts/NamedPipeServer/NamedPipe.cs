@@ -11,6 +11,7 @@ using UnityEngine;
 public class NamedPipe
 {
     private static readonly string PipeName = "UnityPipe";
+    private static readonly string CloseSignal = "Close-Connection";
 
     /// <summary>
     /// Initialised pipe server with default pipe name: "UnityPipe"
@@ -52,50 +53,147 @@ public class NamedPipe
 
     public void RunServer()
     {
-        using (var server = new NamedPipeServerStream(PipeName))
+        // start an in thread
+        // start an out thread
+
+        var reader = new NamedPipeThread(true, 2);
+        var writer = new NamedPipeThread(false, 2);
+        var ReadThread = new Thread(reader.Run);
+        var WriteThread = new Thread(writer.Run);
+
+        ReadThread.Start();
+        WriteThread.Start();
+
+        while (!CloseServer)
         {
-            manageStream(server);
+            Thread.Sleep(10);
         }
+        if (!WriteThread.Join(15))
+        {
+            Debug.Log("Aborting WRITE THREAD");
+            WriteThread.Abort();
+        }
+        if (!ReadThread.Join(15))
+        {
+            Debug.Log("Aborting READ THREAD");
+            ReadThread.Abort();
+        }
+
+        WriteThread.Join();
+        ReadThread.Join();
+
+        
     }
 
 
     public static void CloseConnection()
     {
+        Debug.Log("Closing connection");
         CloseServer = true;
+
+        using (NamedPipeClientStream client = new NamedPipeClientStream(PipeName))
+        {
+            using (BinaryWriter bw = new BinaryWriter(client))
+            {
+                var buf = Encoding.ASCII.GetBytes(CloseSignal);
+                bw.Write((uint)buf.Length);
+                bw.Write(buf);
+                bw.Flush();
+            }
+        }
     }
 
-    private void manageStream(NamedPipeServerStream server)
+
+
+
+
+
+    private class NamedPipeThread
     {
-        using (ServerStream ss = new ServerStream(server))
+        private bool ReaderThread;
+        private int NumberOfThreads;
+
+        public NamedPipeThread(bool ReaderThread, int numThreads)
         {
-            while (!CloseServer)
+            this.ReaderThread = ReaderThread;
+            NumberOfThreads = numThreads;
+        }
+
+        public void Run()
+        {
+            try
             {
-                try
+                using (var server = new NamedPipeServerStream(PipeName, PipeDirection.InOut, NumberOfThreads))
                 {
-                    string str;
-                    if (ss.TryReadFromPipe(out str))
+                    if (ReaderThread)
                     {
-                        ReadQueue.Enqueue(str);
+                        manageReadStream(server);
                     }
 
-                    //Debug.Log($"Read: {str}");
-
-                    //str = new string(str.Reverse().ToArray());
-                    string res;
-                    while (WriteQueue.TryDequeue(out res) && !CloseServer)
+                    if (!ReaderThread)
                     {
-                        ss.WriteToPipe(res);
+                        manageWriteStream(server);
                     }
-
-                    //Debug.Log($"Wrote: {str}");
                 }
-                catch (Exception ex) when (ex is ObjectDisposedException)
+            }
+            catch (ThreadInterruptedException e)
+            {
+                // do any cleanup needed here
+            }
+            
+        }
+
+        private void manageWriteStream(NamedPipeServerStream server)
+        {
+            using (ServerStream ss = new ServerStream(server))
+            {
+                while (!CloseServer)
                 {
-                    CloseConnection();
-                    break;
+                    try
+                    {
+                        string res;
+                        if (WriteQueue.TryDequeue(out res))
+                        {
+                            ss.WriteToPipe(res);
+                            Debug.Log("Attempted WRITE");
+                        }
+
+                        Debug.Log($"outside WRITE");
+                    }
+                    catch (Exception ex) when (ex is ObjectDisposedException)
+                    {
+                        CloseConnection();
+                        break;
+                    }
                 }
             }
         }
+
+        private void manageReadStream(NamedPipeServerStream server)
+        {
+            using (ServerStream ss = new ServerStream(server))
+            {
+                while (!CloseServer)
+                {
+                    try
+                    {
+                        string str;
+                        if (ss.TryReadFromPipe(out str))
+                        {
+                            ReadQueue.Enqueue(str);
+                        }
+
+                        Debug.Log($"Attempted READ");
+                    }
+                    catch (Exception ex) when (ex is ObjectDisposedException)
+                    {
+                        CloseConnection();
+                        break;
+                    }
+                }
+            }
+        }
+
     }
 
     private class ServerStream : IDisposable
@@ -106,8 +204,9 @@ public class NamedPipe
 
         public ServerStream(NamedPipeServerStream server)
         {
-            br = new BinaryReader(server);
-            bw = new BinaryWriter(server);
+            var encoding = Encoding.ASCII;
+            br = new BinaryReader(server, encoding);
+            bw = new BinaryWriter(server, encoding);
 
             //Debug.Log("Waiting for connection...");
             server.WaitForConnection();
@@ -131,6 +230,10 @@ public class NamedPipe
             {
                 var len = (int)br.ReadUInt32();
                 str =  new string(br.ReadChars(len));
+
+                if (str.Equals(CloseSignal))
+                    return false;
+
                 return true;
             }
             catch (Exception ex) when (
@@ -153,6 +256,7 @@ public class NamedPipe
             var buf = Encoding.ASCII.GetBytes(str);
             bw.Write((uint)buf.Length);
             bw.Write(buf);
+            bw.Flush();
         }
 
         protected virtual void Dispose(bool disposing)
