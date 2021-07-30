@@ -8,10 +8,131 @@ using System.Threading;
 using UnityEngine;
 
 
+public static class UnityPipe
+{
+    private static readonly string PipeName = "UnityPipe";
+
+    private static readonly string CloseConn = "--Server-Shutting-Down--";
+
+    private static int _closeServerBackingValue = 0;
+
+    private static bool CloseServer
+    {
+        get { return (Interlocked.CompareExchange(ref _closeServerBackingValue, 1, 1) == 1); }
+        set
+        {
+            if (value) Interlocked.CompareExchange(ref _closeServerBackingValue, 1, 0);
+            else Interlocked.CompareExchange(ref _closeServerBackingValue, 0, 1);
+        }
+    }
+
+    private static int _closeConnectionBackingValue = 0;
+
+    private static bool CloseConnection
+    {
+        get { return (Interlocked.CompareExchange(ref _closeConnectionBackingValue, 1, 1) == 1); }
+        set
+        {
+            if (value) Interlocked.CompareExchange(ref _closeConnectionBackingValue, 1, 0);
+            else Interlocked.CompareExchange(ref _closeConnectionBackingValue, 0, 1);
+        }
+    }
+
+    private static Thread ServerThread;
+
+    public static void RunServer()
+    {
+        NPServer server = new NPServer();
+        ServerThread = new Thread(server.Run);
+        ServerThread.Start();
+    }
+
+    public static void StopServer()
+    {
+        // Send signal to clients to close connection
+
+        ServerThread.Join();
+    }
+
+    private class NPServer : IDisposable
+    {
+        private bool disposedValue;
+        private NamedPipeServerStream server;
+        private BinaryReader br;
+        private BinaryWriter bw;
+
+        public NPServer()
+        {
+            server = new NamedPipeServerStream(PipeName);
+        }
+
+        // outer loop keeping server alive
+
+        // inner loop for each connection
+
+        // write queue thread | read queue thread
+
+        public void Run()
+        {
+            using (server)
+            {
+                while (!CloseServer)
+                {
+
+                }
+            }
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    // TODO: dispose managed state (managed objects)
+                    br.Dispose();
+                    bw.Dispose();
+                    server.Dispose();
+                }
+
+                // TODO: free unmanaged resources (unmanaged objects) and override finalizer
+                // TODO: set large fields to null
+                disposedValue = true;
+            }
+        }
+
+        // // TODO: override finalizer only if 'Dispose(bool disposing)' has code to free unmanaged resources
+        // ~NPServer()
+        // {
+        //     // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+        //     Dispose(disposing: false);
+        // }
+
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+    }
+
+    private class PipeReadQueue: ConcurrentQueue<string>
+    {
+
+    }
+
+    private class PipeWriteQueue: ConcurrentQueue<string>
+    {
+
+    }
+}
+
 public class NamedPipe
 {
     private static readonly string PipeName = "UnityPipe";
     private static readonly string CloseSignal = "Close-Connection";
+
+    private static readonly Int32 ReadTimeout = 5000; // Read timeout duration
 
     /// <summary>
     /// Initialised pipe server with default pipe name: "UnityPipe"
@@ -33,6 +154,18 @@ public class NamedPipe
         }
     }
 
+    private static int _closeConnectionBackingValue = 0;
+
+    private static bool CloseConnection
+    {
+        get { return (Interlocked.CompareExchange(ref _closeConnectionBackingValue, 1, 1) == 1); }
+        set
+        {
+            if (value) Interlocked.CompareExchange(ref _closeConnectionBackingValue, 1, 0);
+            else Interlocked.CompareExchange(ref _closeConnectionBackingValue, 0, 1);
+        }
+    }
+
     /// <summary>
     /// Queue of strings to write to the pipe
     /// </summary>
@@ -43,7 +176,7 @@ public class NamedPipe
     }
 
     /// <summary>
-    /// Queue of strings read from the pipe
+    /// Queue of strings read from the pipe, !! needs to prevent writing when close connection is true !!
     /// </summary>
     private static ConcurrentQueue<string> ReadQueue = new ConcurrentQueue<string>();
 
@@ -53,153 +186,185 @@ public class NamedPipe
 
     public void RunServer()
     {
-        // start an in thread
-        // start an out thread
-
-        var reader = new NamedPipeThread(true, 2);
-        var writer = new NamedPipeThread(false, 2);
-        var ReadThread = new Thread(reader.Run);
-        var WriteThread = new Thread(writer.Run);
-
-        ReadThread.Start();
-        WriteThread.Start();
-
-        while (!CloseServer)
+        using (NamedPipeServerStream server = new NamedPipeServerStream(PipeName))
         {
-            Thread.Sleep(10);
-        }
-        if (!WriteThread.Join(15))
-        {
-            Debug.Log("Aborting WRITE THREAD");
-            WriteThread.Abort();
-        }
-        if (!ReadThread.Join(15))
-        {
-            Debug.Log("Aborting READ THREAD");
-            ReadThread.Abort();
-        }
+            server.ReadTimeout = ReadTimeout;
+            while(!CloseServer) 
+            {
+                try 
+                {                
+                    // got connection, begin protocol
+                    // listen for --connected--
+                    using (ServerStream ss = new ServerStream(server)) 
+                    { // Server stream blocks thread until got a connection
+                        string str;
+                        if (ss.TryReadFromPipe(out str))
+                        {
+                            if (!str.Equals("--connected--"))
+                                throw new MessageProtocolException(str);
+                        } 
+                        else
+                        {
+                            throw new MessageProtocolException("No connected message recieved.");
+                        }
 
-        WriteThread.Join();
-        ReadThread.Join();
+                        // Connection opened sucessfully
+
+                        var reader = new NamedPipeReadThread(2, ss);
+                        var writer = new NamedPipeWriteThread(2, ss);
+
+                        var readThread = new Thread(reader.Run);
+                        var writeThread = new Thread(writer.Run);
+
+                        readThread.Start();
+                        writeThread.Start();
+
+                        readThread.Join();
+                        writeThread.Join();
+
+
+                    } // Blocks here until everything has been read from pipe
+
+
+
+/*
+                        bool streaming = true;
+                        while (streaming) 
+                        {
+                            // check if client will close stream
+                            if (ss.TryReadFromPipe(out str)) 
+                            {
+                                if (str.Equals("--end-of-stream--")) 
+                                {
+                                    streaming = false;
+                                }
+                                else 
+                                {
+
+                                }
+                            }
+                        }
+                    */
+                }
+                catch (ObjectDisposedException e) 
+                {
+                    ShutdownServer();
+                }
+                catch (MessageProtocolException e) 
+                {
+                    Debug.Log($"Message protocol violated on message: {e.Message}");
+                    Disconnect();
+                }
+                
+
+
+            }
+        }
+        
 
         
     }
 
+    public static void ShutdownServer() 
+    {
+        Debug.Log("Closing server");
+        CloseServer = true;
+    }
 
-    public static void CloseConnection()
+    public static void Disconnect()
     {
         Debug.Log("Closing connection");
-        CloseServer = true;
+        CloseConnection = true;
 
-        using (NamedPipeClientStream client = new NamedPipeClientStream(PipeName))
-        {
-            using (BinaryWriter bw = new BinaryWriter(client))
-            {
-                var buf = Encoding.ASCII.GetBytes(CloseSignal);
-                bw.Write((uint)buf.Length);
-                bw.Write(buf);
-                bw.Flush();
-            }
-        }
     }
 
 
+   
 
-
-
-
-    private class NamedPipeThread
+    private class NamedPipeWriteThread 
     {
-        private bool ReaderThread;
         private int NumberOfThreads;
-
-        public NamedPipeThread(bool ReaderThread, int numThreads)
+        private ServerStream serverStream;
+        public NamedPipeWriteThread( int numThreads, ServerStream ss)
         {
-            this.ReaderThread = ReaderThread;
             NumberOfThreads = numThreads;
+            serverStream = ss;
         }
 
         public void Run()
         {
-            try
+            while (!CloseConnection)
             {
-                using (var server = new NamedPipeServerStream(PipeName, PipeDirection.InOut, NumberOfThreads))
+                try
                 {
-                    if (ReaderThread)
+                    string res;
+                    if (WriteQueue.TryDequeue(out res))
                     {
-                        manageReadStream(server);
-                    }
-
-                    if (!ReaderThread)
-                    {
-                        manageWriteStream(server);
+                        serverStream.TryWriteToPipe(res);
                     }
                 }
-            }
-            catch (ThreadInterruptedException e)
-            {
-                // do any cleanup needed here
+                catch (Exception ex) when (ex is ObjectDisposedException)
+                {
+                    Disconnect();
+                    break;
+                }
             }
             
         }
+    }
 
-        private void manageWriteStream(NamedPipeServerStream server)
+    private class NamedPipeReadThread
+    {
+        private int NumberOfThreads;
+        private ServerStream serverStream;
+        public NamedPipeReadThread(int numThreads, ServerStream ss)
         {
-            using (ServerStream ss = new ServerStream(server))
-            {
-                while (!CloseServer)
-                {
-                    try
-                    {
-                        string res;
-                        if (WriteQueue.TryDequeue(out res))
-                        {
-                            ss.WriteToPipe(res);
-                            Debug.Log("Attempted WRITE");
-                        }
-
-                        Debug.Log($"outside WRITE");
-                    }
-                    catch (Exception ex) when (ex is ObjectDisposedException)
-                    {
-                        CloseConnection();
-                        break;
-                    }
-                }
-            }
+            NumberOfThreads = numThreads;
+            serverStream = ss;
         }
+       
 
-        private void manageReadStream(NamedPipeServerStream server)
+        public void Run()
         {
-            using (ServerStream ss = new ServerStream(server))
+            while (!CloseConnection)
             {
-                while (!CloseServer)
+                try
                 {
-                    try
+                    string str;
+                    if (serverStream.TryReadFromPipe(out str))
                     {
-                        string str;
-                        if (ss.TryReadFromPipe(out str))
+                        if (!str.Equals("--end-of-stream--")) 
                         {
                             ReadQueue.Enqueue(str);
                         }
+                        else 
+                        {
+                            Disconnect();
+                        }
+                    }
 
-                        Debug.Log($"Attempted READ");
-                    }
-                    catch (Exception ex) when (ex is ObjectDisposedException)
-                    {
-                        CloseConnection();
-                        break;
-                    }
+                    Debug.Log($"Attempted READ");
+                }
+                catch (InvalidOperationException ex)
+                {
+                    Debug.Log($"Got read timeout exception");
+                    Disconnect();
+                }
+                catch (Exception ex) when (ex is ObjectDisposedException)
+                {
+                    Disconnect();
+                    
                 }
             }
         }
-
     }
 
     private class ServerStream : IDisposable
     {
         private BinaryReader br;
         private BinaryWriter bw;
+
+        private NamedPipeServerStream server;
         private bool disposedValue;
 
         public ServerStream(NamedPipeServerStream server)
@@ -207,9 +372,10 @@ public class NamedPipe
             var encoding = Encoding.ASCII;
             br = new BinaryReader(server, encoding);
             bw = new BinaryWriter(server, encoding);
+            this.server = server;
 
             //Debug.Log("Waiting for connection...");
-            server.WaitForConnection();
+            this.server.WaitForConnection();
 
             //Debug.Log("Connected.");
         }
@@ -251,12 +417,19 @@ public class NamedPipe
         /// expects ASCII encoding
         /// </summary>
         /// <param name="str"></param>
-        public void WriteToPipe(string str)
+        public bool TryWriteToPipe(string str)
         {
             var buf = Encoding.ASCII.GetBytes(str);
-            bw.Write((uint)buf.Length);
-            bw.Write(buf);
-            bw.Flush();
+            if (!CloseServer)
+            { //!! Potential race condition here
+                bw.Write((uint)buf.Length);
+                bw.Write(buf);
+                bw.Flush();
+                return true;
+            } else 
+            {
+                return false;
+            }
         }
 
         protected virtual void Dispose(bool disposing)
@@ -267,10 +440,13 @@ public class NamedPipe
                 {
                     br.Dispose();
                     bw.Dispose();
+                    this.server.Disconnect();
                 }
 
                 // TODO: free unmanaged resources (unmanaged objects) and override finalizer
+
                 // TODO: set large fields to null
+                
                 disposedValue = true;
             }
         }
@@ -288,5 +464,20 @@ public class NamedPipe
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
         }
+    }
+}
+
+
+[Serializable]
+class MessageProtocolException: Exception
+{
+    public MessageProtocolException() 
+    {
+
+    }
+
+    public MessageProtocolException(string message): base(String.Format("Named pipe protocol violation: {0}", message)) 
+    {
+
     }
 }

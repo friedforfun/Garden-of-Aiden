@@ -34,7 +34,7 @@ public class NamedPipeRunner : MonoBehaviour
 
     private void OnDestroy()
     {
-        NamedPipe.CloseConnection();
+        NamedPipe.ShutdownServer();
         server.Join();
     }
 
